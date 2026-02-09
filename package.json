@@ -21,10 +21,13 @@
   },
   "homepage": "https://github.com/Kenzhu-A/sobre-project-backend#readme",
   "dependencies": {
+    "@supabase/supabase-js": "^2.93.3",
+    "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1"
   },
   "devDependencies": {
+    "jest": "^30.2.0",
     "nodemon": "^3.1.11"
   }
 }
