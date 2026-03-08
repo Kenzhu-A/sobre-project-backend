@@ -5,8 +5,8 @@ const usersRoutes = require("./routes/users.routes");
 const salesRoutes = require("./routes/sales.routes");
 const inventoryRoutes = require("./routes/inventory.routes")
 const stocksRoutes = require("./routes/stocks.routes")
-
-
+const storeRoutes = require("./routes/store.routes");
+const auditRoutes = require("./routes/audit.routes");
 const app = express();
 
 app.use(cors({
@@ -24,5 +24,7 @@ app.use("/api/users", usersRoutes);
 app.use("/api/sales", salesRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/stock", stocksRoutes);
+app.use("/api/store", storeRoutes);
+app.use("/api/audit", auditRoutes);
 
 module.exports = app;
