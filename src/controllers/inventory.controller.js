@@ -8,38 +8,13 @@ exports.getInventory = async (req, res) => {
       supplier,
       restock_needed,
       expiry_status,
+      search, // <-- NEW: Added search parameter for the POS Search Bar
       sortBy = "created_at",
       order = "desc",
       page = 1,
       limit = 20,
-      is_pos // <-- WE ADDED THIS FLAG FOR YOUR POS PAGE
     } = req.query;
 
-    // ==========================================
-    // 1. POS LOGIC
-    // ==========================================
-    if (is_pos === 'true') {
-        console.log("➡️ API hit: GET /api/inventory (POS MODE)");
-        let posQuery = supabase
-            .from("inventory")
-            .select("*, stock(*)")
-            .order("created_at", {ascending: false});
-        
-        if (store_id) posQuery = posQuery.eq("store_id", store_id);
-        
-        const { data, error } = await posQuery;
-        
-        if (error) {
-            console.error("❌ SUPABASE ERROR:", error);
-            throw error;
-        }
-        
-        return res.status(200).json(data); // Returns flat array for POS
-    }
-
-    // ==========================================
-    // 2. INVENTORY DASHBOARD LOGIC (Teammate's Code)
-    // ==========================================
     const toArray = (param) => {
       if (!param) return undefined;
       return Array.isArray(param) ? param : [param];
@@ -49,6 +24,7 @@ exports.getInventory = async (req, res) => {
       store_id: store_id,
       category: toArray(category),
       supplier: toArray(supplier),
+      search: search, // <-- Bind search to filters
       sortBy: sortBy,
       order: order,
       restock_needed: restock_needed ? restock_needed === "true" : undefined,
@@ -57,10 +33,16 @@ exports.getInventory = async (req, res) => {
       limit: parseInt(limit, 10)
     };
 
-    let query = supabase.from("v_inventory_status").select("*", {count: "exact"});
+    // Use Kenth's view but append stock(*) so the POS gets variations!
+    let query = supabase.from("v_inventory_status").select("*, stock(*)", {count: "exact"});
 
     if (filters.store_id) {
       query = query.eq("store_id", store_id);
+    }
+
+    // NEW: Backend integration for the search functionality
+    if (filters.search) {
+      query = query.ilike("name", `%${filters.search}%`);
     }
 
     if (typeof filters.restock_needed === "boolean") {
@@ -71,6 +53,7 @@ exports.getInventory = async (req, res) => {
       query = query.eq("is_expiring_soon", filters.expiry_status);
     }
 
+    // Backend integration for the Category functionality
     if (filters.category && filters.category.length > 0) {
       query = query.in("category", filters.category);
     }
@@ -88,6 +71,8 @@ exports.getInventory = async (req, res) => {
     const { data, error, count } = await query;
 
     if (error) throw error;
+    
+    // Kenth's unified return structure (Object with data and meta)
     return res.status(200).json({
       data,
       meta: {
