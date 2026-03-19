@@ -20,11 +20,14 @@ exports.getAuditLogs = async (req, res) => {
   }
 };
 
-// For direct logging from frontend pages like Profile.tsx
+// For direct logging from frontend pages (like POS and Profile)
 exports.createAuditLog = async (req, res) => {
   try {
-    const { users_id, store_id, area, action, item, summary } = req.body;
-    await logAudit({ users_id, store_id, area, action, item, summary });
+    // FIX: Added receipt_id here so it actually gets saved to Supabase!
+    const { users_id, store_id, area, action, item, summary, receipt_id } = req.body;
+    
+    await logAudit({ users_id, store_id, area, action, item, summary, receipt_id });
+    
     res.status(201).json({ message: "Logged successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to log" });
