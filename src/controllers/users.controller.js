@@ -116,40 +116,66 @@ exports.createUserProfile = async (req, res) => {
 exports.createOrgUser = async (req, res) => {
   try {
     const { email, password, username, phone, store_id, admin_user_id } = req.body;
-
-    if (!email || !password || !store_id) {
-      return res.status(400).json({ error: "Email, password, and store_id are required." });
+    
+    if (!email || !password || !store_id || !username) {
+      return res.status(400).json({ error: "Username, Email, password, and store_id are required." });
     }
 
+    // 1. SECURE CHECK: See if this username is already taken in THIS specific store
+    const { data: existingUser } = await supabase
+      .from("users")
+      .select("auth_user_id")
+      .eq("store_id", store_id)
+      .ilike("username", username) // Case insensitive check (e.g., 'john' blocks 'John')
+      .single();
+
+    if (existingUser) {
+      return res.status(400).json({ error: "Username is already taken in your store." });
+    }
+
+    // 2. Create the Auth User in Supabase
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
+      email: email,
+      password: password,
+      email_confirm: true
     });
 
-    if (authError) throw authError;
+    if (authError) {
+        // If Supabase catches a duplicate email globally, we intercept it cleanly
+        if (authError.message.includes("already registered") || authError.status === 422) {
+             return res.status(400).json({ error: "Email address is already registered in the system." });
+        }
+        throw authError;
+    }
 
     const authUserId = authData.user.id;
 
+    // 3. Create the Public User profile linked to this store
     const { data: userData, error: userError } = await supabase
       .from("users")
       .insert({
         auth_user_id: authUserId,
-        username: username || "New User",
+        username: username,
         phone: phone || null,
-        role: "staff",
+        role: "staff", // Default role
         store_id: store_id,
         status: "active"
       })
       .select()
       .single();
 
+    // 4. Rollback safety if the profile insert fails
     if (userError) {
       await supabase.auth.admin.deleteUser(authUserId);
+      
+      // Fallback check just in case two people click submit at the exact same millisecond
+      if (userError.code === '23505') { 
+         return res.status(400).json({ error: "Username is already taken in your store." });
+      }
       throw userError;
     }
 
-    // --- LOG AUDIT: ADDED A USER ---
+    // 5. Fire Audit Log
     if (admin_user_id && store_id) {
       await logAudit({
         users_id: admin_user_id,
@@ -162,8 +188,9 @@ exports.createOrgUser = async (req, res) => {
     }
 
     res.status(201).json({ message: "User created successfully", user: userData });
+
   } catch (err) {
-    console.error("Error creating org user:", err);
+    console.error("Create User Error:", err);
     res.status(500).json({ error: err.message || "Failed to create user." });
   }
 };
