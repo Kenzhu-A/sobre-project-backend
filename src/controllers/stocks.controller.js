@@ -1,4 +1,5 @@
 const supabase = require("../config/supabase");
+const { logAudit } = require("../utils/auditLogger"); // <-- Imported auditLogger
 
 exports.getStockByInventory = async (req, res) => {
   try {
@@ -24,6 +25,7 @@ exports.getStockByInventory = async (req, res) => {
 exports.createStock = async (req, res) => {
   try {
     const { expiry_date, amount, inventory_id } = req.body;
+    const userId = req.query.users_id;
 
     if (!inventory_id || !amount || !expiry_date) {
       return res.status(400).json({ error: "Required fields are missing" });
@@ -39,6 +41,27 @@ exports.createStock = async (req, res) => {
 
     if (error) throw error;
 
+    // --- LOG AUDIT ---
+    if (userId) {
+      const { data: inv } = await supabase
+        .from("inventory")
+        .select("name, store_id")
+        .eq("id", inventory_id)
+        .single();
+
+      if (inv) {
+        await logAudit({
+          users_id: userId,
+          store_id: inv.store_id,
+          inventory_id: inventory_id,
+          area: "Inventory",
+          action: "Adding",
+          item: inv.name,
+          summary: "Added new batch"
+        });
+      }
+    }
+
     res.status(201).json(data);
   } catch (err) {
     console.error("Error creating new stock!", err.message);
@@ -49,11 +72,24 @@ exports.createStock = async (req, res) => {
 exports.updateStock = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
+    const userId = req.query.users_id;
+
+    // Failsafe cleanup
+    delete updates.users_id;
 
     if (!updates || Object.keys(updates).length === 0) {
       return res.status(400).json({ error: "No fields to update" });
     }
+
+    // Fetch old stock data to get name and compare amounts
+    const { data: oldStock, error: fetchError } = await supabase
+      .from("stock")
+      .select("amount, inventory_id, inventory(name, store_id)")
+      .eq("id", id)
+      .single();
+    
+    if (fetchError) throw fetchError;
 
     let query = supabase
       .from("stock")
@@ -66,6 +102,19 @@ exports.updateStock = async (req, res) => {
 
     if (error) throw error;
 
+    // --- LOG AUDIT ---
+    if (userId && oldStock && oldStock.amount !== data.amount) {
+      await logAudit({
+        users_id: userId,
+        store_id: oldStock.inventory.store_id,
+        inventory_id: oldStock.inventory_id,
+        area: "Inventory",
+        action: "Updating",
+        item: oldStock.inventory.name,
+        summary: `Stock: ${oldStock.amount} -> ${data.amount}`
+      });
+    }
+
     res.json(data);
   } catch (err) {
     console.error("Error updating stock item!", err);
@@ -76,12 +125,33 @@ exports.updateStock = async (req, res) => {
 exports.deleteStock = async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.query.users_id;
+
+    // Fetch old data for logging
+    const { data: oldStock } = await supabase
+      .from("stock")
+      .select("amount, inventory_id, inventory(name, store_id)")
+      .eq("id", id)
+      .single();
 
     let query = supabase.from("stock").delete().eq("id", id);
 
     const { error } = await query;
 
     if (error) throw error;
+
+    // --- LOG AUDIT ---
+    if (userId && oldStock) {
+      await logAudit({
+        users_id: userId,
+        store_id: oldStock.inventory.store_id,
+        inventory_id: oldStock.inventory_id,
+        area: "Inventory",
+        action: "Deleting",
+        item: oldStock.inventory.name,
+        summary: "Deleted a batch"
+      });
+    }
 
     res.json({ message: "Deleted Successfuly" });
   } catch (err) {
