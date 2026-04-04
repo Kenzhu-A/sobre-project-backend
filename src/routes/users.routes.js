@@ -8,7 +8,7 @@ const {
   getUsersByStore,
   createOrgUser,
   deleteOrgUsers,
-  updateUserRole // <-- 1. Import
+  updateUserRole, // <-- 1. Import
 } = require("../controllers/users.controller");
 
 router.get("/", getUsers);
