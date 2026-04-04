@@ -8,7 +8,9 @@ const {
     getInventoryIndiv,
     deleteInventory,
     getSuppliers,
-    getCategories
+    getCategories,
+    getInventoryOperationalPDF,
+    getInventoryFinancialPDF
 } = require("../controllers/inventory.controller");
 
 router.get("/", getInventory);
@@ -16,6 +18,8 @@ router.post("/", createInventory);
 router.patch("/:id", updateInventory);
 router.get("/suppliers", getSuppliers);
 router.get("/categories", getCategories);
+router.get("/pdfOperational", getInventoryOperationalPDF);
+router.get("/pdfFinancial", getInventoryFinancialPDF);
 router.get("/:id", getInventoryIndiv);
 router.delete("/:id", deleteInventory);
 

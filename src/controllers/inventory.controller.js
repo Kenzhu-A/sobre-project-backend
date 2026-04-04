@@ -1,5 +1,9 @@
 const supabase = require("../config/supabase");
+const { generatePDF } = require("../utils/pdfGenerator");
 const { uploadBase64Image } = require("../utils/uploadImage");
+const { getHeaderTemplate, getFooterTemplate, buildReportHTML } = require("../utils/pdfTemplates");
+const { formatDate, formatCurrency } = require("../utils/formatters");
+const { getReportMetaData, evaluateExpiry } = require("../utils/reportHelpers");
 const { validate: isUuid } = require("uuid");
 
 // ==========================================
@@ -116,12 +120,9 @@ exports.createInventory = async (req, res) => {
       price <= 0 ||
       !supplier
     ) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Name, Category, Cost, Price, and Supplier are required fields.",
-        });
+      return res.status(400).json({
+        error: "Name, Category, Cost, Price, and Supplier are required fields.",
+      });
     }
 
     // Attempt to upload the photo using our helper function.
@@ -250,6 +251,169 @@ exports.getCategories = async (req, res) => {
     res.json(uniqueCategories);
   } catch (err) {
     console.error("Error fetching list of categories!", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// --- Controller 1: Operational Inventory Report ---
+exports.getInventoryOperationalPDF = async (req, res) => {
+  try {
+    const { user, store, generationDate, today } = await getReportMetaData(req);
+
+    const { data: inventory, error: invError } = await supabase
+      .from("v_stock_inventory_details")
+      .select("*")
+      .eq("store_id", user.store_id);
+    if (invError) throw invError;
+
+    const summary = { inStock: 0, lowStock: 0, outOfStock: 0, safe: 0, nearExpiry: 0, expired: 0 };
+    let tableRowsHTML = "";
+
+    inventory.forEach((item) => {
+      // Evaluate Stock
+      let stockStatus = "In Stock";
+      let stockColor = "#d4edda";
+      if (item.amount === 0) { stockStatus = "Out of Stock"; stockColor = "#e8b8b8"; summary.outOfStock++; } 
+      else if (item.amount <= store.low_stock_param) { stockStatus = "Low Stock"; stockColor = "#fcf0c2"; summary.lowStock++; } 
+      else { summary.inStock++; }
+
+      // Evaluate Expiry
+      const expiry = evaluateExpiry(item.expiry_date, today, store.expiration_param);
+      if (expiry.isExpired) summary.expired++;
+      else if (expiry.isNear) summary.nearExpiry++;
+      else if (expiry.status === "Safe") summary.safe++;
+
+      tableRowsHTML += `
+        <tr>
+          <td class="border border-gray-700 p-2 text-center font-bold bg-[${stockColor}]">${stockStatus}</td>
+          <td class="border border-gray-700 p-2 text-center">${item.sku || "N/A"}</td>
+          <td class="border border-gray-700 p-2 text-left">${item.name || "N/A"}</td>
+          <td class="border border-gray-700 p-2 text-center">${item.amount}</td>
+          <td class="border border-gray-700 p-2 text-center">${item.barcode || "N/A"}</td>
+          <td class="border border-gray-700 p-2 text-center font-bold bg-[${expiry.color}]">${expiry.status}</td>
+          <td class="border border-gray-700 p-2 text-center">${formatDate(item.expiry_date)}</td>
+          <td class="border border-gray-700 p-2 text-center">${formatDate(item.restock_date)}</td>
+          <td class="border border-gray-700 p-2 text-center">${item.sales_today || 0}</td>
+          <td class="border border-gray-700 p-2 text-center">${item.recommended_restock || 0}</td>
+        </tr>
+      `;
+    });
+
+    const tableHeadersHTML = `
+      <th class="w-[8%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Stock Status</th>
+      <th class="w-[8%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">SKU</th>
+      <th class="w-[18%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Name</th>
+      <th class="w-[7%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Amount</th>
+      <th class="w-[12%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Barcode</th>
+      <th class="w-[9%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Expiry Status</th>
+      <th class="w-[9%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Expiry Date</th>
+      <th class="w-[9%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Restock Date</th>
+      <th class="w-[8%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Sales for Today</th>
+      <th class="w-[12%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Recommended Restock</th>
+    `;
+
+    const summaryHTML = `
+      <div class="grid grid-cols-2 gap-x-10 gap-y-2.5 w-[80%] text-[11px]">
+        <div class="flex justify-between font-bold"><span>Total Items In Stock:</span> <span>${summary.inStock}</span></div>
+        <div class="flex justify-between font-bold"><span>Total Items Far from Expiry:</span> <span>${summary.safe}</span></div>
+        <div class="flex justify-between font-bold"><span>Total Low Stock Items:</span> <span>${summary.lowStock}</span></div>
+        <div class="flex justify-between font-bold"><span>Total Items Near Expiry:</span> <span>${summary.nearExpiry}</span></div>
+        <div class="flex justify-between font-bold"><span>Total Out of Stock Items:</span> <span>${summary.outOfStock}</span></div>
+        <div class="flex justify-between font-bold"><span>Total Items Expired:</span> <span>${summary.expired}</span></div>
+      </div>
+    `;
+
+    const bodyHTML = buildReportHTML("Operational Inventory Report", tableHeadersHTML, tableRowsHTML, summaryHTML);
+    const headerHTML = getHeaderTemplate(store.store_name, user.username, user.role, generationDate);
+
+    const pdfBuffer = await generatePDF(bodyHTML, {
+      landscape: true, displayHeaderFooter: true, headerTemplate: headerHTML, footerTemplate: getFooterTemplate(),
+      margin: { top: "140px", bottom: "60px", left: "40px", right: "40px" },
+    });
+
+    res.set({ "Content-Type": "application/pdf", "Content-Disposition": 'inline; filename="Operational_Inventory_Report.pdf"' });
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error("Error exporting Operational PDF", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+// --- Controller 2: Financial Inventory Value Report ---
+exports.getInventoryFinancialPDF = async (req, res) => {
+  try {
+    const { user, store, generationDate, today } = await getReportMetaData(req);
+
+    const { data: inventory, error: invError } = await supabase
+      .from("v_stock_inventory_details")
+      .select("*")
+      .eq("store_id", user.store_id);
+    if (invError) throw invError;
+
+    const summary = { totalValue: 0, sellableValue: 0, expiredValue: 0 };
+    let tableRowsHTML = "";
+
+    inventory.forEach((item) => {
+      const expiry = evaluateExpiry(item.expiry_date, today, store.expiration_param);
+      
+      const itemInventoryValue = Number(item.inventory_value) || 0;
+      summary.totalValue += itemInventoryValue;
+      if (expiry.isExpired) {
+        summary.expiredValue += itemInventoryValue;
+      } else {
+        summary.sellableValue += itemInventoryValue;
+      }
+
+      tableRowsHTML += `
+        <tr>
+          <td class="border border-gray-700 p-2 text-center">${item.sku || "N/A"}</td>
+          <td class="border border-gray-700 p-2 text-left">${item.name || "N/A"}</td>
+          <td class="border border-gray-700 p-2 text-center">${item.amount}</td>
+          <td class="border border-gray-700 p-2 text-center">${formatCurrency(item.cost_per_item)}</td>
+          <td class="border border-gray-700 p-2 text-center font-bold">${formatCurrency(itemInventoryValue)}</td>
+          <td class="border border-gray-700 p-2 text-center">${formatCurrency(item.price_per_item)}</td>
+          <td class="border border-gray-700 p-2 text-center">${item.supplier || "N/A"}</td>
+          <td class="border border-gray-700 p-2 text-center font-mono">${item.barcode || "N/A"}</td>
+          <td class="border border-gray-700 p-2 text-center font-bold bg-[${expiry.color}]">${expiry.status}</td>
+          <td class="border border-gray-700 p-2 text-center">${formatDate(item.expiry_date)}</td>
+        </tr>
+      `;
+    });
+
+    const tableHeadersHTML = `
+      <th class="w-[8%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">SKU</th>
+      <th class="w-[16%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Name</th>
+      <th class="w-[7%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Amount</th>
+      <th class="w-[9%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Cost Per<br/>Item</th>
+      <th class="w-[10%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Total<br/>Inventory<br/>Value</th>
+      <th class="w-[9%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Price<br/>Per<br/>Item</th>
+      <th class="w-[14%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Supplier</th>
+      <th class="w-[10%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Barcode</th>
+      <th class="w-[8%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Expiry<br/>Status</th>
+      <th class="w-[9%] border border-gray-700 p-2 text-center bg-[#174276] text-white font-bold">Expiry Date</th>
+    `;
+
+    const summaryHTML = `
+      <div class="flex flex-col gap-2.5 w-[35%] text-[11px]">
+        <div class="flex justify-between font-bold"><span>Total Inventory Value:</span> <span>${formatCurrency(summary.totalValue)}</span></div>
+        <div class="flex justify-between font-bold"><span>Sellable Inventory Value:</span> <span>${formatCurrency(summary.sellableValue)}</span></div>
+        <div class="flex justify-between font-bold"><span>Expired / Non-Sellable Value:</span> <span>${formatCurrency(summary.expiredValue)}</span></div>
+      </div>
+    `;
+
+    const bodyHTML = buildReportHTML("Financial Inventory Value Report", tableHeadersHTML, tableRowsHTML, summaryHTML);
+    const headerHTML = getHeaderTemplate(store.store_name, user.username, user.role, generationDate);
+
+    const pdfBuffer = await generatePDF(bodyHTML, {
+      landscape: true, displayHeaderFooter: true, headerTemplate: headerHTML, footerTemplate: getFooterTemplate(),
+      margin: { top: "140px", bottom: "60px", left: "40px", right: "40px" },
+    });
+
+    res.set({ "Content-Type": "application/pdf", "Content-Disposition": 'inline; filename="Financial_Inventory_Report.pdf"' });
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error("Error exporting Financial PDF", err);
     res.status(500).json({ error: err.message });
   }
 };
