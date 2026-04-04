@@ -1,17 +1,11 @@
 const express = require("express");
 const router = express.Router();
-const salesController = require("../controllers/sales.controller");
-
-const {
-  getSalesHistory,
-  getSaleDetails,
-  voidSale,
-  createSale,
-} = require("../controllers/sales.controller");
+const { getSalesHistory, getSaleDetails, createSale, voidSale, voidSaleItem } = require("../controllers/sales.controller");
 
 router.get("/", getSalesHistory);
 router.get("/:id", getSaleDetails);
-router.delete("/:id", voidSale);
 router.post("/", createSale);
+router.delete("/:id", voidSale);
+router.delete("/:receiptId/item/:itemId", voidSaleItem); // <-- NEW PARTIAL VOID ROUTE
 
 module.exports = router;

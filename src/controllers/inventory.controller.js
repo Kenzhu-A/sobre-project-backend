@@ -1,4 +1,11 @@
 const supabase = require("../config/supabase");
+const { uploadBase64Image } = require("../utils/uploadImage");
+const { validate: isUuid } = require("uuid");
+const { logAudit } = require("../utils/auditLogger"); // <-- Imported auditLogger
+
+// ==========================================
+// CONTROLLERS
+// ==========================================
 
 exports.getInventory = async (req, res) => {
   try {
@@ -8,7 +15,7 @@ exports.getInventory = async (req, res) => {
       supplier,
       restock_needed,
       expiry_status,
-      search, // <-- NEW: Added search parameter for the POS Search Bar
+      search,
       sortBy = "created_at",
       order = "desc",
       page = 1,
@@ -24,7 +31,7 @@ exports.getInventory = async (req, res) => {
       store_id: store_id,
       category: toArray(category),
       supplier: toArray(supplier),
-      search: search, // <-- Bind search to filters
+      search: search,
       sortBy: sortBy,
       order: order,
       restock_needed: restock_needed ? restock_needed === "true" : undefined,
@@ -33,7 +40,6 @@ exports.getInventory = async (req, res) => {
       limit: parseInt(limit, 10),
     };
 
-    // Use Kenth's view but append stock(*) so the POS gets variations!
     let query = supabase
       .from("v_inventory_status")
       .select("*, stock(*)", { count: "exact" });
@@ -42,7 +48,6 @@ exports.getInventory = async (req, res) => {
       query = query.eq("store_id", store_id);
     }
 
-    // NEW: Backend integration for the search functionality
     if (filters.search) {
       query = query.ilike("name", `%${filters.search}%`);
     }
@@ -55,7 +60,6 @@ exports.getInventory = async (req, res) => {
       query = query.eq("is_expiring_soon", filters.expiry_status);
     }
 
-    // Backend integration for the Category functionality
     if (filters.category && filters.category.length > 0) {
       query = query.in("category", filters.category);
     }
@@ -74,7 +78,6 @@ exports.getInventory = async (req, res) => {
 
     if (error) throw error;
 
-    // Kenth's unified return structure (Object with data and meta)
     return res.status(200).json({
       data,
       meta: {
@@ -104,7 +107,10 @@ exports.getInventoryIndiv = async (req, res) => {
 
 exports.createInventory = async (req, res) => {
   try {
-    const { store_id, name, category, cost, price, supplier } = req.body;
+    const { store_id, name, category, cost, price, supplier, photo } = req.body;
+    
+    // Grab users_id from the URL query
+    const userId = req.query.users_id;
 
     if (
       !store_id ||
@@ -116,16 +122,45 @@ exports.createInventory = async (req, res) => {
     ) {
       return res
         .status(400)
-        .json({ error: "One of the required fields are missing" });
+        .json({
+          error:
+            "Name, Category, Cost, Price, and Supplier are required fields.",
+        });
     }
+
+    const photoUrl = await uploadBase64Image(photo);
 
     const { data, error } = await supabase
       .from("inventory")
-      .insert([{ store_id, name, category, cost, price, supplier }])
+      .insert([
+        {
+          store_id,
+          name,
+          category,
+          cost,
+          price,
+          supplier,
+          photo: photoUrl,
+        },
+      ])
       .select("*")
       .single();
 
     if (error) throw error;
+
+    // --- LOG AUDIT ---
+    if (userId) {
+      await logAudit({
+        users_id: userId,
+        store_id: data.store_id,
+        inventory_id: data.id,
+        area: "Inventory",
+        action: "Adding",
+        item: data.name,
+        summary: "Added new product"
+      });
+    }
+
     res.status(201).json(data);
   } catch (err) {
     console.error("Error creating new item!", err.message);
@@ -136,10 +171,27 @@ exports.createInventory = async (req, res) => {
 exports.updateInventory = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
+    const userId = req.query.users_id;
+
+    // Failsafe: Remove users_id if it somehow got into the updates object so it doesn't crash Supabase
+    delete updates.users_id;
 
     if (!updates || Object.keys(updates).length === 0) {
       return res.status(400).json({ error: "No fields to update" });
+    }
+
+    // Fetch old data to compare differences for the summary
+    const { data: oldData, error: fetchError } = await supabase
+      .from("inventory")
+      .select("*")
+      .eq("id", id)
+      .single();
+      
+    if (fetchError) throw fetchError;
+
+    if (updates.photo && updates.photo.startsWith("data:image")) {
+      updates.photo = await uploadBase64Image(updates.photo);
     }
 
     const { data, error } = await supabase
@@ -150,6 +202,30 @@ exports.updateInventory = async (req, res) => {
       .single();
 
     if (error) throw error;
+
+    // --- LOG AUDIT ---
+    if (userId && oldData) {
+      let summaryParts = [];
+      if (oldData.name !== data.name) summaryParts.push(`Name: ${oldData.name} -> ${data.name}`);
+      if (oldData.category !== data.category) summaryParts.push(`Category: ${oldData.category} -> ${data.category}`);
+      if (oldData.price !== data.price) summaryParts.push(`Price: ₱${Number(oldData.price).toFixed(2)} -> ₱${Number(data.price).toFixed(2)}`);
+      if (oldData.cost !== data.cost) summaryParts.push(`Cost: ₱${Number(oldData.cost).toFixed(2)} -> ₱${Number(data.cost).toFixed(2)}`);
+      if (oldData.discount !== data.discount) summaryParts.push(`Discount: ${oldData.discount}% -> ${data.discount}%`);
+      if (updates.photo && oldData.photo !== data.photo) summaryParts.push(`Updated Photo`);
+
+      let summary = summaryParts.length > 0 ? summaryParts.join(", ") : "Updated product details";
+
+      await logAudit({
+        users_id: userId,
+        store_id: data.store_id,
+        inventory_id: id,
+        area: "Inventory",
+        action: "Updating",
+        item: data.name, 
+        summary: summary
+      });
+    }
+
     res.json(data);
   } catch (err) {
     console.error("Error updating inventory", err);
@@ -160,8 +236,46 @@ exports.updateInventory = async (req, res) => {
 exports.deleteInventory = async (req, res) => {
   try {
     const { id } = req.params;
-    const { error } = supabase.from("inventory").delete().eq("id", id);
+    const userId = req.query.users_id;
+
+    if (!id || !isUuid(id)) {
+      return res.status(400).json({ error: "Invalid item ID format." });
+    }
+
+    // Fetch details before deleting so we know what item was deleted
+    const { data: oldItem } = await supabase
+      .from("inventory")
+      .select("name, store_id")
+      .eq("id", id)
+      .single();
+
+    const { data, error } = await supabase
+      .from("inventory")
+      .delete()
+      .eq("id", id)
+      .select();
+
     if (error) throw error;
+
+    if (!data || data.length === 0) {
+      return res
+        .status(404)
+        .json({ error: "Item not found or already deleted." });
+    }
+
+    // --- LOG AUDIT ---
+    if (userId && oldItem) {
+      await logAudit({
+        users_id: userId,
+        store_id: oldItem.store_id,
+        inventory_id: id,
+        area: "Inventory",
+        action: "Deleting",
+        item: oldItem.name,
+        summary: "Deleted product"
+      });
+    }
+
     res.json({ message: "Deleted" });
   } catch (err) {
     console.error("Error deleting entry.", err.message);

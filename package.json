@@ -22,9 +22,12 @@
   "homepage": "https://github.com/Kenzhu-A/sobre-project-backend#readme",
   "dependencies": {
     "@supabase/supabase-js": "^2.93.3",
+    "base64-arraybuffer": "^1.0.2",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "morgan": "^1.10.1",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "jest": "^30.2.0",
