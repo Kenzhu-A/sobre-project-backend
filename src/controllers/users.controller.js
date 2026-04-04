@@ -8,12 +8,13 @@ exports.getUsersByStore = async (req, res) => {
 
     const { data: storeUsers, error: usersError } = await supabase
       .from("users")
-      .select("*, store(store_name, province)") 
+      .select("*, store(store_name, province)")
       .eq("store_id", storeId);
 
     if (usersError) throw usersError;
 
-    const { data: authData, error: authError } = await supabase.auth.admin.listUsers();
+    const { data: authData, error: authError } =
+      await supabase.auth.admin.listUsers();
     if (authError) throw authError;
 
     const authUsers = authData.users;
@@ -27,16 +28,28 @@ exports.getUsersByStore = async (req, res) => {
         let email = authU ? authU.email : "Unknown Email";
         let currentStatus = u.status || "active";
 
-        const lastActiveDate = authU && authU.last_sign_in_at 
-          ? new Date(authU.last_sign_in_at) 
-          : (authU ? new Date(authU.created_at) : new Date());
+        const lastActiveDate =
+          authU && authU.last_sign_in_at
+            ? new Date(authU.last_sign_in_at)
+            : authU
+              ? new Date(authU.created_at)
+              : new Date();
 
         if (lastActiveDate < thirtyDaysAgo && currentStatus === "active") {
           currentStatus = "inactive";
-          await supabase.from("users").update({ status: "inactive" }).eq("auth_user_id", u.auth_user_id);
-        } else if (lastActiveDate >= thirtyDaysAgo && currentStatus === "inactive") {
+          await supabase
+            .from("users")
+            .update({ status: "inactive" })
+            .eq("auth_user_id", u.auth_user_id);
+        } else if (
+          lastActiveDate >= thirtyDaysAgo &&
+          currentStatus === "inactive"
+        ) {
           currentStatus = "active";
-          await supabase.from("users").update({ status: "active" }).eq("auth_user_id", u.auth_user_id);
+          await supabase
+            .from("users")
+            .update({ status: "active" })
+            .eq("auth_user_id", u.auth_user_id);
         }
 
         return {
@@ -44,9 +57,9 @@ exports.getUsersByStore = async (req, res) => {
           email,
           status: currentStatus,
           store_name: u.store?.store_name || "No Store",
-          province: u.store?.province || "Unknown Location"
+          province: u.store?.province || "Unknown Location",
         };
-      })
+      }),
     );
 
     res.json(enrichedUsers);
@@ -79,12 +92,22 @@ exports.getUserById = async (req, res) => {
 
 exports.createUserProfile = async (req, res) => {
   try {
-    const { 
-      auth_user_id, username, role, phone, photo, 
-      store_name, building, street, barangay, city, province 
+    const {
+      auth_user_id,
+      username,
+      role,
+      phone,
+      photo,
+      store_name,
+      building,
+      street,
+      barangay,
+      city,
+      province,
     } = req.body;
 
-    if (!auth_user_id) return res.status(400).json({ error: "auth_user_id required" });
+    if (!auth_user_id)
+      return res.status(400).json({ error: "auth_user_id required" });
 
     const { data: storeData, error: storeError } = await supabase
       .from("store")
@@ -92,18 +115,27 @@ exports.createUserProfile = async (req, res) => {
       .select()
       .single();
 
-    if (storeError) return res.status(400).json({ error: "Failed to create store record." });
+    if (storeError)
+      return res.status(400).json({ error: "Failed to create store record." });
 
     const { data: userData, error: userError } = await supabase
       .from("users")
       .upsert(
-        { auth_user_id, username: username || 'Manager', role: role || 'manager', phone, photo, store_id: storeData.id },
-        { onConflict: 'auth_user_id' }
+        {
+          auth_user_id,
+          username: username || "Manager",
+          role: role || "manager",
+          phone,
+          photo,
+          store_id: storeData.id,
+        },
+        { onConflict: "auth_user_id" },
       )
       .select()
       .single();
 
-    if (userError) return res.status(400).json({ error: "Failed to create user profile." });
+    if (userError)
+      return res.status(400).json({ error: "Failed to create user profile." });
 
     res.json({ user: userData, store: storeData });
   } catch (err) {
@@ -115,17 +147,21 @@ exports.createUserProfile = async (req, res) => {
 // Create a new user for an organization (Manager action)
 exports.createOrgUser = async (req, res) => {
   try {
-    const { email, password, username, phone, store_id, admin_user_id } = req.body;
+    const { email, password, username, phone, store_id, admin_user_id } =
+      req.body;
 
     if (!email || !password || !store_id) {
-      return res.status(400).json({ error: "Email, password, and store_id are required." });
+      return res
+        .status(400)
+        .json({ error: "Email, password, and store_id are required." });
     }
 
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-    });
+    const { data: authData, error: authError } =
+      await supabase.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+      });
 
     if (authError) throw authError;
 
@@ -139,7 +175,7 @@ exports.createOrgUser = async (req, res) => {
         phone: phone || null,
         role: "staff",
         store_id: store_id,
-        status: "active"
+        status: "active",
       })
       .select()
       .single();
@@ -157,11 +193,13 @@ exports.createOrgUser = async (req, res) => {
         area: "System Settings",
         action: "Adding",
         item: "User & Role Management",
-        summary: "Added a user"
+        summary: "Added a user",
       });
     }
 
-    res.status(201).json({ message: "User created successfully", user: userData });
+    res
+      .status(201)
+      .json({ message: "User created successfully", user: userData });
   } catch (err) {
     console.error("Error creating org user:", err);
     res.status(500).json({ error: err.message || "Failed to create user." });
@@ -171,7 +209,7 @@ exports.createOrgUser = async (req, res) => {
 // Delete users from the organization
 exports.deleteOrgUsers = async (req, res) => {
   try {
-    const { userIds, admin_user_id, store_id } = req.body; 
+    const { userIds, admin_user_id, store_id } = req.body;
 
     if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
       return res.status(400).json({ error: "No users provided for deletion." });
@@ -190,7 +228,7 @@ exports.deleteOrgUsers = async (req, res) => {
         area: "System Settings",
         action: "Deleting",
         item: "User & Role Management",
-        summary: `Deleted ${userIds.length} user${userIds.length > 1 ? 's' : ''}`
+        summary: `Deleted ${userIds.length} user${userIds.length > 1 ? "s" : ""}`,
       });
     }
 
@@ -204,7 +242,7 @@ exports.deleteOrgUsers = async (req, res) => {
 // Update a user's role (Inline Edit)
 exports.updateUserRole = async (req, res) => {
   try {
-    const { userId } = req.params; 
+    const { userId } = req.params;
     const { role, admin_user_id, store_id } = req.body;
 
     if (!role) return res.status(400).json({ error: "Role is required." });
@@ -216,7 +254,8 @@ exports.updateUserRole = async (req, res) => {
       .select();
 
     if (error) throw error;
-    if (!data || data.length === 0) return res.status(404).json({ error: "User not found." });
+    if (!data || data.length === 0)
+      return res.status(404).json({ error: "User not found." });
 
     // --- LOG AUDIT: UPDATED USER ROLE ---
     if (admin_user_id && store_id) {
@@ -226,7 +265,7 @@ exports.updateUserRole = async (req, res) => {
         area: "System Settings",
         action: "Updating",
         item: "User & Role Management",
-        summary: "Updated a user’s role"
+        summary: "Updated a user’s role",
       });
     }
 

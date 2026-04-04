@@ -18,7 +18,7 @@ exports.getInventory = async (req, res) => {
     const toArray = (param) => {
       if (!param) return undefined;
       return Array.isArray(param) ? param : [param];
-    }
+    };
 
     const filters = {
       store_id: store_id,
@@ -30,11 +30,13 @@ exports.getInventory = async (req, res) => {
       restock_needed: restock_needed ? restock_needed === "true" : undefined,
       expiry_status: expiry_status ? expiry_status === "true" : undefined,
       page: parseInt(page, 10),
-      limit: parseInt(limit, 10)
+      limit: parseInt(limit, 10),
     };
 
     // Use Kenth's view but append stock(*) so the POS gets variations!
-    let query = supabase.from("v_inventory_status").select("*, stock(*)", {count: "exact"});
+    let query = supabase
+      .from("v_inventory_status")
+      .select("*, stock(*)", { count: "exact" });
 
     if (filters.store_id) {
       query = query.eq("store_id", store_id);
@@ -62,7 +64,7 @@ exports.getInventory = async (req, res) => {
       query = query.in("supplier", filters.supplier);
     }
 
-    query = query.order(sortBy, {ascending: ( filters.order == "asc" )});
+    query = query.order(sortBy, { ascending: filters.order == "asc" });
 
     const from = (filters.page - 1) * filters.limit;
     const to = from + filters.limit - 1;
@@ -71,17 +73,16 @@ exports.getInventory = async (req, res) => {
     const { data, error, count } = await query;
 
     if (error) throw error;
-    
+
     // Kenth's unified return structure (Object with data and meta)
     return res.status(200).json({
       data,
       meta: {
         total_count: count,
         page: filters.page,
-        limit: filters.limit
-      }
+        limit: filters.limit,
+      },
     });
-
   } catch (error) {
     console.error("Error fetching inventory!", error);
     res.status(500).json({ error: "Failed to fetch inventory." });
@@ -105,8 +106,17 @@ exports.createInventory = async (req, res) => {
   try {
     const { store_id, name, category, cost, price, supplier } = req.body;
 
-    if (!store_id || !name || !category || cost <= 0 || price <= 0 || !supplier) {
-      return res.status(400).json({ error: "One of the required fields are missing" });
+    if (
+      !store_id ||
+      !name ||
+      !category ||
+      cost <= 0 ||
+      price <= 0 ||
+      !supplier
+    ) {
+      return res
+        .status(400)
+        .json({ error: "One of the required fields are missing" });
     }
 
     const { data, error } = await supabase
@@ -162,13 +172,17 @@ exports.deleteInventory = async (req, res) => {
 exports.getSuppliers = async (req, res) => {
   try {
     const { store_id } = req.params;
-    let query = supabase.from("inventory").select("supplier", { distinct: true });
+    let query = supabase
+      .from("inventory")
+      .select("supplier", { distinct: true });
     if (store_id) query = query.eq("store_id", store_id);
-    
+
     const { data, error } = await query;
     if (error) throw error;
 
-    const uniqueSuppliers = [...new Set(data.map((s) => s.supplier.trim()))].map((supplier) => ({ supplier }));
+    const uniqueSuppliers = [
+      ...new Set(data.map((s) => s.supplier.trim())),
+    ].map((supplier) => ({ supplier }));
     res.json(uniqueSuppliers);
   } catch (err) {
     console.error("Error fetching list of suppliers!", err);
@@ -179,13 +193,17 @@ exports.getSuppliers = async (req, res) => {
 exports.getCategories = async (req, res) => {
   try {
     const { store_id } = req.query;
-    let query = supabase.from("inventory").select("category", { distinct: true });
+    let query = supabase
+      .from("inventory")
+      .select("category", { distinct: true });
     if (store_id) query = query.eq("store_id", store_id);
 
     const { data, error } = await query;
     if (error) throw error;
 
-    const uniqueCategories = [...new Set(data.map((s) => s.category.trim()))].map((category) => ({ category }));
+    const uniqueCategories = [
+      ...new Set(data.map((s) => s.category.trim())),
+    ].map((category) => ({ category }));
     res.json(uniqueCategories);
   } catch (err) {
     console.error("Error fetching list of categories!", err);

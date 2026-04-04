@@ -6,7 +6,7 @@ const {
   getSalesHistory,
   getSaleDetails,
   voidSale,
-  createSale
+  createSale,
 } = require("../controllers/sales.controller");
 
 router.get("/", getSalesHistory);

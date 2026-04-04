@@ -4,7 +4,8 @@ const { logAudit } = require("../utils/auditLogger");
 exports.getAuditLogs = async (req, res) => {
   try {
     const { store_id } = req.query;
-    if (!store_id) return res.status(400).json({ error: "store_id is required" });
+    if (!store_id)
+      return res.status(400).json({ error: "store_id is required" });
 
     const { data, error } = await supabase
       .from("audit_logs")

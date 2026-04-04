@@ -1,9 +1,18 @@
 const supabase = require("../config/supabase");
 
-const logAudit = async ({ users_id, store_id, area, action, item, summary, inventory_id = null, receipt_id = null }) => {
+const logAudit = async ({
+  users_id,
+  store_id,
+  area,
+  action,
+  item,
+  summary,
+  inventory_id = null,
+  receipt_id = null,
+}) => {
   try {
     // We pass the required data, Supabase handles the date and time automatically
-    const { error } = await supabase.from('audit_logs').insert({
+    const { error } = await supabase.from("audit_logs").insert({
       users_id,
       store_id,
       inventory_id,
@@ -11,7 +20,7 @@ const logAudit = async ({ users_id, store_id, area, action, item, summary, inven
       area,
       action,
       item,
-      summary
+      summary,
     });
 
     if (error) {

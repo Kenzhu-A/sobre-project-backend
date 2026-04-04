@@ -116,7 +116,7 @@ exports.POSUpdate = async (req, res) => {
           "Malformed payload. Each item requires a valid UUID 'id' and a positive number 'amount'.",
       });
     }
-    
+
     // Database Transaction
     const { error } = await supabase.rpc("process_sales_transaction", {
       payload: items,
