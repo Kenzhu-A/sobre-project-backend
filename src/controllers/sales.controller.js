@@ -67,19 +67,45 @@ exports.getSaleDetails = async (req, res) => {
   }
 };
 
+// Record a New Sale (Checkout)
 exports.createSale = async (req, res) => {
   try {
     const { store_id, user_id, subtotal, discount, total_price, amount_tendered, change, cart } = req.body;
-    const invoice_no = `INV-${Date.now()}`;
+
+    if (!store_id || !cart || cart.length === 0) {
+      return res.status(400).json({ error: "Missing required fields or empty cart." });
+    }
+
+    // 1. Generate Philippine-Specific Invoice Number via our RPC
+    const { data: invoice_no, error: invoiceError } = await supabase
+      .rpc("generate_next_invoice_no", { p_store_id: store_id });
+
+    if (invoiceError) {
+        console.error("RPC Error:", invoiceError);
+        throw invoiceError;
+    }
+
     const total_items = cart.reduce((sum, item) => sum + item.totalQuantity, 0);
 
+    // 2. Create Receipt with the real invoice number
     const { data: receipt, error: receiptError } = await supabase
       .from("receipts")
-      .insert({ store_id, user_id, invoice_no, subtotal, discount, total_price, amount_tendered, change, total_items })
-      .select().single();
+      .insert([{ 
+        store_id, 
+        user_id: user_id || null, 
+        invoice_no, 
+        subtotal, 
+        discount, 
+        total_price, 
+        total_items 
+      }])
+      .select()
+      .single();
+
     if (receiptError) throw receiptError;
 
-    const salesItems = cart.map(item => ({
+    // 3. Insert Line Items into Sales Table
+    const salesPayload = cart.map(item => ({
       receipt_id: receipt.id,
       inventory_id: item.productId,
       product_name: item.name,
@@ -87,12 +113,37 @@ exports.createSale = async (req, res) => {
       price_at_sale: item.price
     }));
 
-    const { error: salesError } = await supabase.from("sales").insert(salesItems);
+    const { error: salesError } = await supabase
+      .from("sales")
+      .insert(salesPayload);
+
     if (salesError) throw salesError;
 
-    res.status(201).json({ message: "Sale successful", receipt });
+    // 4. Deduct Stock
+    const stockUpdates = [];
+    for (const item of cart) {
+      for (const variation of item.variations) {
+        const { data: stockData } = await supabase
+          .from("stock")
+          .select("amount")
+          .eq("id", variation.stockId)
+          .single();
+
+        if (stockData) {
+          const newAmount = Math.max(0, stockData.amount - variation.quantity);
+          stockUpdates.push(
+            supabase.from("stock").update({ amount: newAmount }).eq("id", variation.stockId)
+          );
+        }
+      }
+    }
+    
+    await Promise.all(stockUpdates);
+
+    res.status(201).json({ message: "Sale recorded successfully", receipt });
   } catch (err) {
-    res.status(500).json({ error: "Failed to record sale" });
+    console.error("Error recording sale:", err);
+    res.status(500).json({ error: "Failed to record sale", details: err.message });
   }
 };
 
