@@ -351,7 +351,6 @@ exports.getCategories = async (req, res) => {
   }
 };
 
-// --- Controller 1: Operational Inventory Report ---
 exports.getInventoryOperationalPDF = async (req, res) => {
   try {
     const { user, store, generationDate, today } = await getReportMetaData(req);

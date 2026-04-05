@@ -6,15 +6,48 @@ exports.getSalesHistory = async (req, res) => {
     const { store_id } = req.query;
     if (!store_id) return res.status(400).json({ error: "Unauthorized: store_id is required." });
 
+    // We use a Supabase Join to get the receipt, the items sold, and their base cost from inventory
     const { data, error } = await supabase
       .from("receipts")
-      .select(`*, users:user_id ( username, photo )`)
+      .select(`
+        *,
+        users:user_id ( username, photo ),
+        sales (
+          quantity,
+          inventory ( cost )
+        )
+      `)
       .eq("store_id", store_id)
       .order("created_at", { ascending: false });
 
-    if (error) throw error;
-    res.json(data);
+    if (error) {
+      console.warn("Join Error:", error);
+      throw error;
+    }
+
+    // Calculate total cost for each receipt
+    const receiptsWithCost = data.map(receipt => {
+      let total_cost = 0;
+      
+      if (receipt.sales && Array.isArray(receipt.sales)) {
+        receipt.sales.forEach(sale => {
+          // Fallback to 0 if inventory item was deleted
+          const cost = sale.inventory?.cost || 0; 
+          total_cost += cost * sale.quantity;
+        });
+      }
+      
+      // Remove the raw sales array to keep the payload clean
+      const { sales, ...rest } = receipt;
+      return {
+        ...rest,
+        total_cost
+      };
+    });
+
+    res.json(receiptsWithCost);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Failed to fetch sales history" });
   }
 };
@@ -131,7 +164,7 @@ exports.voidSale = async (req, res) => {
         users_id: admin_user_id,
         store_id: receipt.store_id,
         area: "Sales",
-        action: "Deleting", // FIX: Changed to Deleting
+        action: "Deleting",
         item: "Sales Record",
         summary: "Sales Voided"
       });
@@ -166,7 +199,7 @@ exports.voidSaleItem = async (req, res) => {
       
       if (admin_user_id) {
         await logAudit({
-          users_id: admin_user_id, store_id: receipt.store_id, area: "Sales", action: "Deleting", item: "Sales Record", summary: "Sales Voided" // FIX: Changed to Deleting
+          users_id: admin_user_id, store_id: receipt.store_id, area: "Sales", action: "Deleting", item: "Sales Record", summary: "Sales Voided" 
         });
       }
       return res.json({ message: "Last item voided, entire sale voided." });
@@ -185,7 +218,7 @@ exports.voidSaleItem = async (req, res) => {
         users_id: admin_user_id,
         store_id: receipt.store_id,
         area: "Sales",
-        action: "Deleting", // FIX: Changed to Deleting
+        action: "Deleting", 
         item: "Sales Record",
         summary: `${item.product_name} voided`
       });
