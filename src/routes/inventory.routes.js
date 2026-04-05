@@ -11,9 +11,11 @@ const {
     getCategories,
     getInventoryOperationalPDF,
     getInventoryFinancialPDF,
-    importCSV
+    importCSV,
+    scanProduct,
 } = require("../controllers/inventory.controller");
 
+router.get("/scan", scanProduct);
 router.get("/", getInventory);
 router.post("/", createInventory);
 router.patch("/:id", updateInventory);
