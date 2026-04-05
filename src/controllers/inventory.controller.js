@@ -1,7 +1,11 @@
 const supabase = require("../config/supabase");
 const { generatePDF } = require("../utils/pdfGenerator");
 const { uploadBase64Image } = require("../utils/uploadImage");
-const { getHeaderTemplate, getFooterTemplate, buildReportHTML } = require("../utils/pdfTemplates");
+const {
+  getHeaderTemplate,
+  getFooterTemplate,
+  buildReportHTML,
+} = require("../utils/pdfTemplates");
 const { formatDate, formatCurrency } = require("../utils/formatters");
 const { getReportMetaData, evaluateExpiry } = require("../utils/reportHelpers");
 const { validate: isUuid } = require("uuid");
@@ -68,7 +72,7 @@ exports.getInventory = async (req, res) => {
     }
 
     if (filters.supplier && filters.supplier.length > 0) {
-      query = query.in("supplier", filters.supplier);
+      query = query.in("primary_supplier", filters.supplier);
     }
 
     query = query.order(sortBy, { ascending: filters.order == "asc" });
@@ -110,7 +114,8 @@ exports.getInventoryIndiv = async (req, res) => {
 
 exports.createInventory = async (req, res) => {
   try {
-    const { store_id, name, category, cost, price, supplier, photo } = req.body;
+    const { store_id, name, category, cost, price, primary_supplier, photo } =
+      req.body;
 
     if (
       !store_id ||
@@ -118,7 +123,7 @@ exports.createInventory = async (req, res) => {
       !category ||
       cost <= 0 ||
       price <= 0 ||
-      !supplier
+      !primary_supplier
     ) {
       return res.status(400).json({
         error: "Name, Category, Cost, Price, and Supplier are required fields.",
@@ -138,7 +143,7 @@ exports.createInventory = async (req, res) => {
           category,
           cost,
           price,
-          supplier,
+          primary_supplier,
           photo: photoUrl, // Save the generated URL (or null if no photo)
         },
       ])
@@ -216,20 +221,43 @@ exports.deleteInventory = async (req, res) => {
 exports.getSuppliers = async (req, res) => {
   try {
     const { store_id } = req.params;
-    let query = supabase
-      .from("inventory")
-      .select("supplier", { distinct: true });
-    if (store_id) query = query.eq("store_id", store_id);
 
-    const { data, error } = await query;
-    if (error) throw error;
+    // 1. Fetch primary suppliers from the inventory blueprint
+    let invQuery = supabase.from("inventory").select("primary_supplier");
 
-    const uniqueSuppliers = [
-      ...new Set(data.map((s) => s.supplier.trim())),
-    ].map((supplier) => ({ supplier }));
+    if (store_id) invQuery = invQuery.eq("store_id", store_id);
+
+    // 2. Fetch batch suppliers from the stock history
+    // We use !inner to force an inner join, filtering stock by the parent inventory's store_id
+    let stockQuery = supabase
+      .from("stock")
+      .select("supplier, inventory!inner(store_id)");
+
+    if (store_id) stockQuery = stockQuery.eq("inventory.store_id", store_id);
+
+    // Execute both queries concurrently for better performance
+    const [invResult, stockResult] = await Promise.all([invQuery, stockQuery]);
+
+    if (invResult.error) throw invResult.error;
+    if (stockResult.error) throw stockResult.error;
+
+    // 3. Extract, clean, and merge the arrays
+    const invSuppliers = invResult.data
+      .map((s) => s.primary_supplier?.trim())
+      .filter(Boolean);
+
+    const stockSuppliers = stockResult.data
+      .map((s) => s.supplier?.trim())
+      .filter(Boolean);
+
+    // 4. Deduplicate using a Set and map back to the expected object structure
+    const uniqueSuppliers = [...new Set([...invSuppliers, ...stockSuppliers])]
+      .sort((a, b) => a.localeCompare(b)) // Optional: Alphabetize the list
+      .map((supplier) => ({ supplier }));
+
     res.json(uniqueSuppliers);
   } catch (err) {
-    console.error("Error fetching list of suppliers!", err);
+    console.error("Error fetching combined list of suppliers!", err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -266,19 +294,38 @@ exports.getInventoryOperationalPDF = async (req, res) => {
       .eq("store_id", user.store_id);
     if (invError) throw invError;
 
-    const summary = { inStock: 0, lowStock: 0, outOfStock: 0, safe: 0, nearExpiry: 0, expired: 0 };
+    const summary = {
+      inStock: 0,
+      lowStock: 0,
+      outOfStock: 0,
+      safe: 0,
+      nearExpiry: 0,
+      expired: 0,
+    };
     let tableRowsHTML = "";
 
     inventory.forEach((item) => {
       // Evaluate Stock
       let stockStatus = "In Stock";
       let stockColor = "#d4edda";
-      if (item.amount === 0) { stockStatus = "Out of Stock"; stockColor = "#e8b8b8"; summary.outOfStock++; } 
-      else if (item.amount <= store.low_stock_param) { stockStatus = "Low Stock"; stockColor = "#fcf0c2"; summary.lowStock++; } 
-      else { summary.inStock++; }
+      if (item.amount === 0) {
+        stockStatus = "Out of Stock";
+        stockColor = "#e8b8b8";
+        summary.outOfStock++;
+      } else if (item.amount <= store.low_stock_param) {
+        stockStatus = "Low Stock";
+        stockColor = "#fcf0c2";
+        summary.lowStock++;
+      } else {
+        summary.inStock++;
+      }
 
       // Evaluate Expiry
-      const expiry = evaluateExpiry(item.expiry_date, today, store.expiration_param);
+      const expiry = evaluateExpiry(
+        item.expiry_date,
+        today,
+        store.expiration_param,
+      );
       if (expiry.isExpired) summary.expired++;
       else if (expiry.isNear) summary.nearExpiry++;
       else if (expiry.status === "Safe") summary.safe++;
@@ -323,22 +370,38 @@ exports.getInventoryOperationalPDF = async (req, res) => {
       </div>
     `;
 
-    const bodyHTML = buildReportHTML("Operational Inventory Report", tableHeadersHTML, tableRowsHTML, summaryHTML);
-    const headerHTML = getHeaderTemplate(store.store_name, user.username, user.role, generationDate);
+    const bodyHTML = buildReportHTML(
+      "Operational Inventory Report",
+      tableHeadersHTML,
+      tableRowsHTML,
+      summaryHTML,
+    );
+    const headerHTML = getHeaderTemplate(
+      store.store_name,
+      user.username,
+      user.role,
+      generationDate,
+    );
 
     const pdfBuffer = await generatePDF(bodyHTML, {
-      landscape: true, displayHeaderFooter: true, headerTemplate: headerHTML, footerTemplate: getFooterTemplate(),
+      landscape: true,
+      displayHeaderFooter: true,
+      headerTemplate: headerHTML,
+      footerTemplate: getFooterTemplate(),
       margin: { top: "140px", bottom: "60px", left: "40px", right: "40px" },
     });
 
-    res.set({ "Content-Type": "application/pdf", "Content-Disposition": 'inline; filename="Operational_Inventory_Report.pdf"' });
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition":
+        'inline; filename="Operational_Inventory_Report.pdf"',
+    });
     res.send(pdfBuffer);
   } catch (err) {
     console.error("Error exporting Operational PDF", err);
     res.status(500).json({ error: err.message });
   }
 };
-
 
 // --- Controller 2: Financial Inventory Value Report ---
 exports.getInventoryFinancialPDF = async (req, res) => {
@@ -355,8 +418,12 @@ exports.getInventoryFinancialPDF = async (req, res) => {
     let tableRowsHTML = "";
 
     inventory.forEach((item) => {
-      const expiry = evaluateExpiry(item.expiry_date, today, store.expiration_param);
-      
+      const expiry = evaluateExpiry(
+        item.expiry_date,
+        today,
+        store.expiration_param,
+      );
+
       const itemInventoryValue = Number(item.inventory_value) || 0;
       summary.totalValue += itemInventoryValue;
       if (expiry.isExpired) {
@@ -402,18 +469,131 @@ exports.getInventoryFinancialPDF = async (req, res) => {
       </div>
     `;
 
-    const bodyHTML = buildReportHTML("Financial Inventory Value Report", tableHeadersHTML, tableRowsHTML, summaryHTML);
-    const headerHTML = getHeaderTemplate(store.store_name, user.username, user.role, generationDate);
+    const bodyHTML = buildReportHTML(
+      "Financial Inventory Value Report",
+      tableHeadersHTML,
+      tableRowsHTML,
+      summaryHTML,
+    );
+    const headerHTML = getHeaderTemplate(
+      store.store_name,
+      user.username,
+      user.role,
+      generationDate,
+    );
 
     const pdfBuffer = await generatePDF(bodyHTML, {
-      landscape: true, displayHeaderFooter: true, headerTemplate: headerHTML, footerTemplate: getFooterTemplate(),
+      landscape: true,
+      displayHeaderFooter: true,
+      headerTemplate: headerHTML,
+      footerTemplate: getFooterTemplate(),
       margin: { top: "140px", bottom: "60px", left: "40px", right: "40px" },
     });
 
-    res.set({ "Content-Type": "application/pdf", "Content-Disposition": 'inline; filename="Financial_Inventory_Report.pdf"' });
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition":
+        'inline; filename="Financial_Inventory_Report.pdf"',
+    });
     res.send(pdfBuffer);
   } catch (err) {
     console.error("Error exporting Financial PDF", err);
     res.status(500).json({ error: err.message });
+  }
+};
+
+exports.importCSV = async (req, res) => {
+  try {
+    const userId = req.query.users_id;
+    const { updates = [], newItems = [], supplier } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "Missing users_id parameter." });
+    }
+
+    // 1. Resolve Store ID
+    const { data: user, error: userError } = await supabase
+      .from("users")
+      .select("store_id")
+      .eq("auth_user_id", userId)
+      .single();
+
+    if (userError || !user) {
+      return res
+        .status(404)
+        .json({ error: "Store mapping failed for this user." });
+    }
+    const storeId = user.store_id;
+
+    const stockPayload = [];
+
+    // 2. Process New Products
+    if (newItems.length > 0) {
+      const inventoryPayload = newItems.map((item) => ({
+        store_id: storeId,
+        name: item.name,
+        category: item.category,
+        primary_supplier: supplier,
+        cost: item.cost,
+        price: item.sellingPrice,
+      }));
+
+      // Insert and return generated IDs to link with the stock table
+      const { data: insertedInventory, error: invError } = await supabase
+        .from("inventory")
+        .insert(inventoryPayload)
+        .select("id, name");
+
+      if (invError) throw invError;
+
+      // Map generated inventory IDs to their initial stock batches
+      insertedInventory.forEach((dbItem) => {
+        const originalItem = newItems.find((n) => n.name === dbItem.name);
+        if (originalItem && originalItem.amount > 0) {
+          stockPayload.push({
+            inventory_id: dbItem.id,
+            amount: originalItem.amount,
+            expiry_date: originalItem.expiryDate || null,
+            supplier: supplier, // CORRECTED KEY
+          });
+        }
+      });
+    }
+
+    // 3. Process Stock Updates for Existing Products
+    if (updates.length > 0) {
+      updates.forEach((update) => {
+        if (update.amount > 0) {
+          stockPayload.push({
+            inventory_id: update.inventoryId,
+            amount: update.amount,
+            expiry_date: update.expiryDate || null,
+            supplier: supplier, // CORRECTED KEY
+          });
+        }
+      });
+    }
+
+    // 4. Execute Bulk Stock Insertion
+    if (stockPayload.length > 0) {
+      const { error: stockError } = await supabase
+        .from("stock")
+        .insert(stockPayload);
+
+      if (stockError) throw stockError;
+    }
+
+    return res.status(200).json({
+      message: "Import successful",
+      metrics: {
+        newItemsCreated: newItems.length,
+        stockBatchesAdded: stockPayload.length,
+      },
+    });
+  } catch (error) {
+    console.error("CSV Import Error:", error);
+    return res.status(500).json({
+      error: error.message || "Failed to process CSV import.",
+    });
   }
 };
