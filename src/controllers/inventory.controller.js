@@ -48,9 +48,10 @@ exports.getInventory = async (req, res) => {
       limit: parseInt(limit, 10),
     };
 
+    // 1. Fetch from the View WITHOUT the stock(*) join to prevent the Supabase Crash
     let query = supabase
       .from("v_inventory_status")
-      .select("*, stock(*)", { count: "exact" });
+      .select("*", { count: "exact" });
 
     if (filters.store_id) {
       query = query.eq("store_id", store_id);
@@ -84,7 +85,28 @@ exports.getInventory = async (req, res) => {
 
     const { data, error, count } = await query;
 
-    if (error) throw error;
+    if (error) {
+      console.log("Supabase Query Error:", error);
+      throw error;
+    }
+
+    // 2. THE FIX: Manually fetch and attach the stock for the POS!
+    if (data && data.length > 0) {
+      const inventoryIds = data.map((item) => item.id);
+      
+      const { data: stockData, error: stockError } = await supabase
+        .from("stock")
+        .select("*")
+        .in("inventory_id", inventoryIds);
+
+      if (!stockError && stockData) {
+        data.forEach((item) => {
+          item.stock = stockData.filter((s) => s.inventory_id === item.id);
+        });
+      } else {
+        data.forEach((item) => { item.stock = []; });
+      }
+    }
 
     return res.status(200).json({
       data,
@@ -675,5 +697,43 @@ exports.importCSV = async (req, res) => {
     return res.status(500).json({
       error: error.message || "Failed to process CSV import.",
     });
+  }
+};
+
+// Scan a Product via QR/Barcode
+exports.scanProduct = async (req, res) => {
+  try {
+    const { barcode, store_id } = req.query;
+
+    if (!barcode || !store_id) {
+      return res.status(400).json({ error: "Missing barcode or store_id" });
+    }
+
+    // 1. Find the specific variation in the stock table
+    const { data: stockData, error: stockError } = await supabase
+      .from("stock")
+      .select("*")
+      .eq("barcode", barcode)
+      .single();
+
+    if (stockError || !stockData) {
+      return res.status(404).json({ error: "Barcode not found in stock" });
+    }
+
+    // 2. Find the parent product for this specific store
+    const { data: productData, error: productError } = await supabase
+      .from("inventory")
+      .select("*, stock(*)")
+      .eq("id", stockData.inventory_id)
+      .eq("store_id", store_id)
+      .single();
+
+    if (productError || !productData) {
+      return res.status(404).json({ error: "Product not found in this store" });
+    }
+
+    return res.json({ product: productData, scannedStock: stockData });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 };
