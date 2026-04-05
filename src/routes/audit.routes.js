@@ -1,6 +1,9 @@
 const express = require("express");
 const router = express.Router();
-const { getAuditLogs, createAuditLog } = require("../controllers/audit.controller");
+const {
+  getAuditLogs,
+  createAuditLog,
+} = require("../controllers/audit.controller");
 
 router.get("/", getAuditLogs);
 router.post("/", createAuditLog);
