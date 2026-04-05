@@ -24,21 +24,25 @@ exports.getStockByInventory = async (req, res) => {
 
 exports.createStock = async (req, res) => {
   try {
-    const { expiry_date, amount, inventory_id } = req.body;
-    const userId = req.query.users_id;
+    const { expiry_date, amount, inventory_id, supplier } = req.body;
 
-    if (!inventory_id || !amount || !expiry_date) {
-      return res.status(400).json({ error: "Required fields are missing" });
+    // STRICT VALIDATION: supplier is now mandatory
+    if (!inventory_id || !amount || !supplier || String(supplier).trim() === "") {
+      return res.status(400).json({ error: "Inventory ID, amount, and supplier are required." });
     }
 
     let query = supabase
       .from("stock")
-      .insert([{ expiry_date, amount, inventory_id }])
+      .insert([{ 
+        expiry_date: expiry_date || null, // Expiry remains optional
+        amount, 
+        inventory_id, 
+        supplier: String(supplier).trim() // Safe string injection
+      }])
       .select("*")
       .single();
 
     const { data, error } = await query;
-
     if (error) throw error;
 
     // --- LOG AUDIT ---
@@ -186,7 +190,7 @@ exports.POSUpdate = async (req, res) => {
           "Malformed payload. Each item requires a valid UUID 'id' and a positive number 'amount'.",
       });
     }
-    
+
     // Database Transaction
     const { error } = await supabase.rpc("process_sales_transaction", {
       payload: items,
