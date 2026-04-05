@@ -25,6 +25,4 @@ router.get("/pdfFinancial", getInventoryFinancialPDF);
 router.get("/:id", getInventoryIndiv);
 router.delete("/:id", deleteInventory);
 
-
-
 module.exports = router;
