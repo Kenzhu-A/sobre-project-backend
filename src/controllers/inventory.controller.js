@@ -209,21 +209,34 @@ exports.updateInventory = async (req, res) => {
     // --- LOG AUDIT ---
     if (userId && oldData) {
       let summaryParts = [];
+      
       if (oldData.name !== data.name) summaryParts.push(`Name: ${oldData.name} -> ${data.name}`);
       if (oldData.category !== data.category) summaryParts.push(`Category: ${oldData.category} -> ${data.category}`);
       if (oldData.price !== data.price) summaryParts.push(`Price: ₱${Number(oldData.price).toFixed(2)} -> ₱${Number(data.price).toFixed(2)}`);
       if (oldData.cost !== data.cost) summaryParts.push(`Cost: ₱${Number(oldData.cost).toFixed(2)} -> ₱${Number(data.cost).toFixed(2)}`);
       if (oldData.discount !== data.discount) summaryParts.push(`Discount: ${oldData.discount}% -> ${data.discount}%`);
-      if (updates.photo && oldData.photo !== data.photo) summaryParts.push(`Updated Photo`);
+      
+      // NEW: Explicitly check for photo deletion vs photo update
+      if (oldData.photo && !data.photo) {
+        summaryParts.push(`Deleted photo`);
+      } else if (data.photo && oldData.photo !== data.photo) {
+        summaryParts.push(`Updated photo`);
+      }
 
       let summary = summaryParts.length > 0 ? summaryParts.join(", ") : "Updated product details";
+
+      // NEW: Change action to "Deleting" if the ONLY thing they did was delete the photo
+      let actionType = "Updating";
+      if (summaryParts.length === 1 && summaryParts[0] === "Deleted photo") {
+        actionType = "Deleting";
+      }
 
       await logAudit({
         users_id: userId,
         store_id: data.store_id,
         inventory_id: id,
         area: "Inventory",
-        action: "Updating",
+        action: actionType, // Dynamic action based on what changed
         item: data.name, 
         summary: summary
       });
