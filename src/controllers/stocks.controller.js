@@ -24,6 +24,7 @@ exports.getStockByInventory = async (req, res) => {
 
 exports.createStock = async (req, res) => {
   try {
+    const userId = req.query.users_id; // <-- ADD THIS LINE
     const { expiry_date, amount, inventory_id, supplier } = req.body;
 
     // STRICT VALIDATION: supplier is now mandatory
