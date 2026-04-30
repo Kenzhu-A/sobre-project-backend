@@ -97,7 +97,9 @@ exports.createSale = async (req, res) => {
         subtotal, 
         discount, 
         total_price, 
-        total_items 
+        total_items,
+        amount_tendered,   // <--- ADD THIS LINE
+        change
       }])
       .select()
       .single();

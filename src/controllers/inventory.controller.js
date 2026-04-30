@@ -14,7 +14,6 @@ const { logAudit } = require("../utils/auditLogger"); // <-- Imported auditLogge
 // ==========================================
 // CONTROLLERS
 // ==========================================
-
 exports.getInventory = async (req, res) => {
   try {
     const {
@@ -30,9 +29,18 @@ exports.getInventory = async (req, res) => {
       limit = 20,
     } = req.query;
 
+    // --- CRITICAL DATA BOUNDARY FIX ---
+    if (!store_id) {
+      return res.status(403).json({
+        error: "Unauthorized: store_id parameter is missing.",
+      });
+    }
+
+    // FIXED: Split comma-separated strings into arrays
     const toArray = (param) => {
       if (!param) return undefined;
-      return Array.isArray(param) ? param : [param];
+      if (Array.isArray(param)) return param;
+      return param.split(",").map((s) => s.trim());
     };
 
     const filters = {
@@ -48,11 +56,11 @@ exports.getInventory = async (req, res) => {
       limit: parseInt(limit, 10),
     };
 
-    // 1. Fetch from the View WITHOUT the stock(*) join to prevent the Supabase Crash
     let query = supabase
       .from("v_inventory_status")
-      .select("*", { count: "exact" });
+      .select("*, stock(*)", { count: "exact" });
 
+    // Enforce store_id constraint on the query
     if (filters.store_id) {
       query = query.eq("store_id", store_id);
     }
@@ -85,28 +93,7 @@ exports.getInventory = async (req, res) => {
 
     const { data, error, count } = await query;
 
-    if (error) {
-      console.log("Supabase Query Error:", error);
-      throw error;
-    }
-
-    // 2. THE FIX: Manually fetch and attach the stock for the POS!
-    if (data && data.length > 0) {
-      const inventoryIds = data.map((item) => item.id);
-      
-      const { data: stockData, error: stockError } = await supabase
-        .from("stock")
-        .select("*")
-        .in("inventory_id", inventoryIds);
-
-      if (!stockError && stockData) {
-        data.forEach((item) => {
-          item.stock = stockData.filter((s) => s.inventory_id === item.id);
-        });
-      } else {
-        data.forEach((item) => { item.stock = []; });
-      }
-    }
+    if (error) throw error;
 
     return res.status(200).json({
       data,
@@ -137,6 +124,7 @@ exports.getInventoryIndiv = async (req, res) => {
 
 exports.createInventory = async (req, res) => {
   try {
+    const userId = req.query.users_id; // <-- ADD THIS LINE
     const { store_id, name, category, cost, price, primary_supplier, photo } =
       req.body;
 
@@ -182,7 +170,7 @@ exports.createInventory = async (req, res) => {
         area: "Inventory",
         action: "Adding",
         item: data.name,
-        summary: "Added new product"
+        summary: "Added new product",
       });
     }
 
@@ -198,31 +186,31 @@ exports.updateInventory = async (req, res) => {
     const { id } = req.params;
     const updates = { ...req.body };
     const userId = req.query.users_id;
+    const storeId = req.query.store_id; // <-- Require store_id from the frontend
 
-    // Failsafe: Remove users_id if it somehow got into the updates object so it doesn't crash Supabase
     delete updates.users_id;
+    delete updates.store_id; // prevent accidental store reassignment
 
-    if (!updates || Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: "No fields to update" });
-    }
+    if (!storeId) return res.status(403).json({ error: "Unauthorized: store_id required." });
+    if (!updates || Object.keys(updates).length === 0) return res.status(400).json({ error: "No fields to update" });
 
-    // Fetch old data to compare differences for the summary
+    // --- CRITICAL SECURITY FIX: Match BOTH id and store_id ---
     const { data: oldData, error: fetchError } = await supabase
       .from("inventory")
       .select("*")
       .eq("id", id)
+      .eq("store_id", storeId) // Prevents fetching someone else's item
       .single();
-      
-    if (fetchError) throw fetchError;
 
-    if (updates.photo && updates.photo.startsWith("data:image")) {
-      updates.photo = await uploadBase64Image(updates.photo);
-    }
+    if (fetchError || !oldData) return res.status(404).json({ error: "Item not found or unauthorized." });
+
+    // ... handle photo upload ...
 
     const { data, error } = await supabase
       .from("inventory")
       .update(updates)
       .eq("id", id)
+      .eq("store_id", storeId) // Prevents updating someone else's item
       .select("*")
       .single();
 
@@ -231,14 +219,30 @@ exports.updateInventory = async (req, res) => {
     // --- LOG AUDIT ---
     if (userId && oldData) {
       let summaryParts = [];
-      if (oldData.name !== data.name) summaryParts.push(`Name: ${oldData.name} -> ${data.name}`);
-      if (oldData.category !== data.category) summaryParts.push(`Category: ${oldData.category} -> ${data.category}`);
-      if (oldData.price !== data.price) summaryParts.push(`Price: ₱${Number(oldData.price).toFixed(2)} -> ₱${Number(data.price).toFixed(2)}`);
-      if (oldData.cost !== data.cost) summaryParts.push(`Cost: ₱${Number(oldData.cost).toFixed(2)} -> ₱${Number(data.cost).toFixed(2)}`);
-      if (oldData.discount !== data.discount) summaryParts.push(`Discount: ${oldData.discount}% -> ${data.discount}%`);
-      if (updates.photo && oldData.photo !== data.photo) summaryParts.push(`Updated Photo`);
+      if (oldData.name !== data.name)
+        summaryParts.push(`Name: ${oldData.name} -> ${data.name}`);
+      if (oldData.category !== data.category)
+        summaryParts.push(`Category: ${oldData.category} -> ${data.category}`);
+      if (oldData.price !== data.price)
+        summaryParts.push(
+          `Price: ₱${Number(oldData.price).toFixed(2)} -> ₱${Number(data.price).toFixed(2)}`,
+        );
+      if (oldData.cost !== data.cost)
+        summaryParts.push(
+          `Cost: ₱${Number(oldData.cost).toFixed(2)} -> ₱${Number(data.cost).toFixed(2)}`,
+        );
+      if (oldData.discount !== data.discount)
+        summaryParts.push(
+          `Discount: ${oldData.discount}% -> ${data.discount}%`,
+        );
+      if (updates.photo && oldData.photo !== data.photo)
+        summaryParts.push(`Updated Photo`);
+      // CHECK IF NULL PHOTO FOR REMOVED PHOTO
 
-      let summary = summaryParts.length > 0 ? summaryParts.join(", ") : "Updated product details";
+      let summary =
+        summaryParts.length > 0
+          ? summaryParts.join(", ")
+          : "Updated product details";
 
       await logAudit({
         users_id: userId,
@@ -246,8 +250,8 @@ exports.updateInventory = async (req, res) => {
         inventory_id: id,
         area: "Inventory",
         action: "Updating",
-        item: data.name, 
-        summary: summary
+        item: data.name,
+        summary: summary,
       });
     }
 
@@ -262,23 +266,29 @@ exports.deleteInventory = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.query.users_id;
+    const storeId = req.query.store_id;
 
-    if (!id || !isUuid(id)) {
-      return res.status(400).json({ error: "Invalid item ID format." });
-    }
+    if (!storeId) return res.status(403).json({ error: "Unauthorized: store_id required." });
+    if (!id || !isUuid(id)) return res.status(400).json({ error: "Invalid item ID format." });
 
-    // Fetch details before deleting so we know what item was deleted
-    const { data: oldItem } = await supabase
+    // --- CRITICAL SECURITY FIX ---
+    const { data: oldItem, error: fetchError } = await supabase
       .from("inventory")
       .select("name, store_id")
       .eq("id", id)
+      .eq("store_id", storeId) // Enforce ownership
       .single();
+
+    if (fetchError || !oldItem) return res.status(404).json({ error: "Item not found or unauthorized." });
 
     const { data, error } = await supabase
       .from("inventory")
       .delete()
       .eq("id", id)
+      .eq("store_id", storeId) // Enforce ownership
       .select();
+
+    // ... rest of the code
 
     if (error) throw error;
 
@@ -297,7 +307,7 @@ exports.deleteInventory = async (req, res) => {
         area: "Inventory",
         action: "Deleting",
         item: oldItem.name,
-        summary: "Deleted product"
+        summary: "Deleted product",
       });
     }
 
@@ -310,18 +320,22 @@ exports.deleteInventory = async (req, res) => {
 
 exports.getSuppliers = async (req, res) => {
   try {
-    const { store_id } = req.params;
-
+    const store_id = req.query.store_id || req.params.store_id;
     // 1. Fetch primary suppliers from the inventory blueprint
-    let invQuery = supabase.from("inventory").select("primary_supplier");
+
+
+    if (!store_id) return res.status(403).json({ error: "Unauthorized: store_id is required." });
+
+    let invQuery = supabase.from("inventory").select("primary_supplier").eq("store_id", store_id);
+    let stockQuery = supabase.from("stock").select("supplier, inventory!inner(store_id)").eq("inventory.store_id", store_id);
+
+    
 
     if (store_id) invQuery = invQuery.eq("store_id", store_id);
 
     // 2. Fetch batch suppliers from the stock history
     // We use !inner to force an inner join, filtering stock by the parent inventory's store_id
-    let stockQuery = supabase
-      .from("stock")
-      .select("supplier, inventory!inner(store_id)");
+
 
     if (store_id) stockQuery = stockQuery.eq("inventory.store_id", store_id);
 
@@ -355,12 +369,14 @@ exports.getSuppliers = async (req, res) => {
 exports.getCategories = async (req, res) => {
   try {
     const { store_id } = req.query;
-    let query = supabase
-      .from("inventory")
-      .select("category", { distinct: true });
-    if (store_id) query = query.eq("store_id", store_id);
 
-    const { data, error } = await query;
+    // --- CRITICAL SECURITY FIX ---
+    if (!store_id) return res.status(403).json({ error: "Unauthorized: store_id is required." });
+
+    const { data, error } = await supabase
+      .from("inventory")
+      .select("category", { distinct: true })
+      .eq("store_id", store_id); // Forced requirement
     if (error) throw error;
 
     const uniqueCategories = [
